@@ -1,5 +1,7 @@
 package addons
 
+import "core:mem"
+import "base:runtime"
 import "core:fmt"
 import "core:reflect"
 import "core:strings"
@@ -17,25 +19,20 @@ Field_Type :: struct {
 
 @(private)
 write_struct_field :: proc(obj: ^$T, field: Field_Type, value: $E) -> Field_Error {
-	if !(size_of(field.type.id) == size_of(E) || field.type.id == typeid_of(E)) {
-		return fmt.tprintf(
-			"given field {}.{} ({}) is not the same size as given value {}. {} != {}",
-			typeid_of(T),
-			field.name,
-			field.type.id,
-			typeid_of(E),
-			size_of(field.type.id),
-			size_of(E),
-		)
-	}
+    value := value
+    value_bytes := reflect.as_bytes(value)
 
-	obj_bytes := reflect.as_bytes(obj^)
-	value_bytes := reflect.as_bytes(value)
-	for i in 0 ..< len(value_bytes) {
-		obj_bytes[int(field.offset) + i] = value_bytes[i]
-	}
+    if field.type.id != typeid_of(E) || len(value_bytes) != field.type.size {
+        return fmt.tprintf(
+            "given field {}.{} ({}) is {} bytes, but value {} is {} bytes",
+            typeid_of(T), field.name, field.type.id, field.type.size, typeid_of(E), len(value_bytes),
+        )
+    }
 
-	return nil
+    obj_bytes := mem.ptr_to_bytes(obj)
+    copy(obj_bytes[field.offset:], value_bytes)
+
+    return nil
 }
 
 @(test)
@@ -45,6 +42,27 @@ write_struct_field_test :: proc(t: ^testing.T) {
 		value:    T `sqlite:"Value"`,
 		padding2: [5]u8 `sqlite:"Padding2"`,
 	}
+	obj: S(string)
+
+	fields, err := get_type_fields(S(string))
+	testing.expect(t, err == nil)
+	defer delete_field_types(fields)
+
+	testing.expect(t, fields[0].tag == "Padding1")
+	testing.expect(t, fields[0].name == "padding1")
+	testing.expect(t, fields[0].type.id == typeid_of([13]u8))
+
+	testing.expect(t, fields[1].tag == "Value")
+	testing.expect(t, fields[1].name == "value")
+	testing.expect(t, fields[1].type.id == typeid_of(string))
+
+	testing.expect(t, fields[2].tag == "Padding2")
+	testing.expect(t, fields[2].name == "padding2")
+	testing.expect(t, fields[2].type.id == typeid_of([5]u8))
+
+	arr := [13]u8{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
+
+	err = write_struct_field(&obj, fields[0], arr)
 
 	test_using_type :: proc(t: ^testing.T, value: $T) {
 		S1 :: S(T)
@@ -193,4 +211,64 @@ get_type_fields_test__malformed_tag_missing_quote :: proc(t: ^testing.T) {
 
 	fields, err := get_type_fields(S)
 	testing.expect(t, err != nil)
+}
+
+@(test)
+write_struct_field_test__fixed_array_into_matching_field :: proc(t: ^testing.T) {
+    S :: struct {
+        blob: [5]byte `sqlite:"blob"`,
+    }
+
+    obj: S
+    arr := [5]byte{55, 23, 10, 4, 34}
+    fields, err := get_type_fields(S)
+    testing.expect(t, err == nil)
+    defer delete_field_types(fields)
+
+    werr := write_struct_field(&obj, fields[0], arr)
+    testing.expect(t, werr == nil, fmt.aprintf("Got an error on write struct field. %s", werr, allocator = context.temp_allocator))
+    testing.expect_value(t, obj.blob[0], 55)
+    testing.expect_value(t, obj.blob[1], 23)
+    testing.expect_value(t, obj.blob[4], 34)
+}
+
+
+@(test)
+write_struct_field_test__fixed_array_wrong_length :: proc(t: ^testing.T) {
+	S :: struct {
+	    blob: [5]byte `sqlite:"blob"`,
+	}
+	obj: S
+
+	arr := [4]byte{1, 2, 3, 4}
+
+	fields, err := get_type_fields(S)
+	testing.expect(t, err == nil)
+	defer delete_field_types(fields)
+
+	werr := write_struct_field(&obj, fields[0], arr)
+	testing.expect(t, werr != nil)
+	testing.expect(t, strings.contains(werr.(string), "[5]"))
+	testing.expect(t, strings.contains(werr.(string), "[4]"))
+	testing.expect_value(t, obj.blob[0], 0)
+	testing.expect_value(t, obj.blob[4], 0)
+}
+
+@(test)
+write_struct_field_test__slice :: proc(t: ^testing.T) {
+	S :: struct {
+		pad: []u8 `sqlite:"Pad"`, // slice has 16
+		after: u8 `sqlite:"After"`,
+	}
+	obj: S
+
+	fields, err := get_type_fields(S)
+	testing.expect(t, err == nil)
+	defer delete_field_types(fields)
+
+	arr := [13]u8{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
+	werr := write_struct_field(&obj, fields[0], arr[:])
+	testing.expect(t, werr == nil)
+	testing.expect_value(t, len(obj.pad[:]), len(arr[:]))
+	testing.expect_value(t, obj.after, 0)
 }
