@@ -1,11 +1,13 @@
 package addons
 
+import "core:log"
 import "core:mem"
 import "base:runtime"
 import "core:fmt"
 import "core:reflect"
 import "core:strings"
 import "core:testing"
+import "core:slice"
 
 Field_Error :: Maybe(string)
 
@@ -18,19 +20,37 @@ Field_Type :: struct {
 }
 
 @(private)
-write_struct_field :: proc(obj: ^$T, field: Field_Type, value: $E) -> Field_Error {
-    value := value
-    value_bytes := reflect.as_bytes(value)
+types_compatible :: proc(a, b: ^runtime.Type_Info) -> bool {
+    if a.id == b.id do return true
 
-    if field.type.id != typeid_of(E) || len(value_bytes) != field.type.size {
+    ca := runtime.type_info_core(a)
+    cb := runtime.type_info_core(b)
+    if ca.id == cb.id do return true
+
+    return ca.size == cb.size &&
+        reflect.type_kind(ca.id) == reflect.type_kind(cb.id) &&
+        reflect.is_unsigned(ca) == reflect.is_unsigned(cb)
+}
+
+@(private)
+write_struct_field :: proc(obj: ^$T, field: Field_Type, value: $E) -> Field_Error {
+
+    if !types_compatible(field.type, type_info_of(E)) || size_of(E) != field.type.size {
         return fmt.tprintf(
             "given field {}.{} ({}) is {} bytes, but value {} is {} bytes",
-            typeid_of(T), field.name, field.type.id, field.type.size, typeid_of(E), len(value_bytes),
+            typeid_of(T), field.name, field.type.id, field.type.size, typeid_of(E), size_of(E),
         )
     }
 
+    value := value
+
+    if typeid_of(E) == typeid_of([]u8) {
+        s := (^[]u8)(&value)
+        s^, _ = slice.clone(s^)
+    }
+
     obj_bytes := mem.ptr_to_bytes(obj)
-    copy(obj_bytes[field.offset:], value_bytes)
+    copy(obj_bytes[field.offset:], reflect.as_bytes(value))
 
     return nil
 }
@@ -257,7 +277,7 @@ write_struct_field_test__fixed_array_wrong_length :: proc(t: ^testing.T) {
 @(test)
 write_struct_field_test__slice :: proc(t: ^testing.T) {
 	S :: struct {
-		pad: []u8 `sqlite:"Pad"`, // slice has 16
+		pad: []u8 `sqlite:"Pad"`,
 		after: u8 `sqlite:"After"`,
 	}
 	obj: S

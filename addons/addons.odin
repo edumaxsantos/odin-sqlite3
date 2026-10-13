@@ -241,8 +241,16 @@ write_struct_field_from_statement :: proc(
 	case typeid_of(u64):
 		value := u64(sqlite3.column_int64(stmt, col_idx))
 		write_struct_field(obj, field^, value) or_return
+	case typeid_of([]byte):
+	    log.debug("it is a slice")
+        ptr := sqlite3.column_blob(stmt, col_idx)
+    	size := sqlite3.column_bytes(stmt, col_idx)
+    	slc := slice.bytes_from_ptr(ptr, int(size))
+    	write_struct_field(obj, field^, slc) or_return
+        log.debugf("slice: %v, obj: %v", slc[:], obj)
 	case:
 		if reflect.is_array(field.type) {
+		    log.debug("it is an array")
 			ptr := sqlite3.column_blob(stmt, col_idx)
 			size := sqlite3.column_bytes(stmt, col_idx)
 			slc := slice.bytes_from_ptr(ptr, int(size))
